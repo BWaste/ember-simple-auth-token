@@ -76,6 +76,7 @@ export default TokenAuthenticator.extend({
     this.identificationField = Configuration.identificationField;
     this.passwordField = Configuration.passwordField;
     this.tokenPropertyName = Configuration.tokenPropertyName;
+    this.refreshTokenPropertyName = Configuration.refreshTokenPropertyName;
     this.refreshAccessTokens = Configuration.refreshAccessTokens;
     this.refreshLeeway = Configuration.refreshLeeway;
     this.tokenExpireName = Configuration.tokenExpireName;
@@ -107,6 +108,7 @@ export default TokenAuthenticator.extend({
     return new Ember.RSVP.Promise((resolve, reject) => {
       const now = this.getCurrentTime();
       const token = dataObject.get(this.tokenPropertyName);
+      const refreshToken = dataObject.get(this.refreshTokenPropertyName);
       let expiresAt = this.resolveTime(dataObject.get(this.tokenExpireName));
 
       if (Ember.isEmpty(token)) {
@@ -125,15 +127,15 @@ export default TokenAuthenticator.extend({
       }
 
       if (expiresAt > now) {
-        const wait = expiresAt - now - (this.refreshLeeway * 1000);
+        const wait = expiresAt - now - this.refreshLeeway;
 
         if (wait > 0) {
           if (this.refreshAccessTokens) {
-            this.scheduleAccessTokenRefresh(dataObject.get(this.tokenExpireName), token);
+            this.scheduleAccessTokenRefresh(dataObject.get(this.tokenExpireName), refreshToken);
           }
           resolve(data);
         } else if (this.refreshAccessTokens) {
-          resolve(this.refreshAccessToken(token));
+          resolve(this.refreshAccessToken(refreshToken));
         } else {
           reject(new Error('unable to refresh token'));
         }
@@ -192,17 +194,17 @@ export default TokenAuthenticator.extend({
     @method scheduleAccessTokenRefresh
     @private
   */
-  scheduleAccessTokenRefresh(expiresAt, token) {
+  scheduleAccessTokenRefresh(expiresAt, refreshToken) {
     if (this.refreshAccessTokens) {
       expiresAt = this.resolveTime(expiresAt);
 
       const now = this.getCurrentTime();
-      const wait = expiresAt - now - (this.refreshLeeway * 1000);
+      const wait = expiresAt - now - this.refreshLeeway;
 
-      if (!Ember.isEmpty(token) && !Ember.isEmpty(expiresAt) && wait > 0) {
+      if (!Ember.isEmpty(refreshToken) && !Ember.isEmpty(expiresAt) && wait > 0) {
         Ember.run.cancel(this._refreshTokenTimeout);
         delete this._refreshTokenTimeout;
-        this._refreshTokenTimeout = Ember.run.later(this, this.refreshAccessToken, token, wait);
+        this._refreshTokenTimeout = Ember.run.later(this, this.refreshAccessToken, refreshToken, wait);
       }
     }
   },
@@ -221,11 +223,11 @@ export default TokenAuthenticator.extend({
     @method refreshAccessToken
     @private
   */
-  refreshAccessToken(token, headers) {
-    const data = this.makeRefreshData(token);
+  refreshAccessToken(refreshToken, headers) {
+    const data = this.makeRefreshData(refreshToken);
 
     return new Ember.RSVP.Promise((resolve, reject) => {
-      this.makeRequest(this.serverTokenRefreshEndpoint, data, headers)
+      this.makeRequest(this.serverTokenRefreshEndpoint, data, headers, 'PUT')
         .then((response) => {
           Ember.run(() => {
             try {
@@ -257,20 +259,10 @@ export default TokenAuthenticator.extend({
     @method makeRefreshData
     @return {object} An object with the nested property name.
   */
-  makeRefreshData(token) {
-    const data = {};
-    let lastObject = data;
-    const nestings = this.tokenPropertyName.split('.');
-    const tokenPropertyName = nestings.pop();
-
-    nestings.forEach((nesting) => {
-      lastObject[nesting] = {};
-      lastObject = lastObject[nesting];
-    });
-
-    lastObject[tokenPropertyName] = token;
-
-    return data;
+  makeRefreshData(refreshToken) {
+    return {
+      RefreshToken: refreshToken
+    };
   },
 
   /**
@@ -296,10 +288,10 @@ export default TokenAuthenticator.extend({
     @method makeRequest
     @private
   */
-  makeRequest(url, data, headers) {
+  makeRequest(url, data, headers, method = 'POST') {
     return Ember.$.ajax({
       url: url,
-      method: 'POST',
+      method,
       data: JSON.stringify(data),
       dataType: 'json',
       contentType: 'application/json',
@@ -337,7 +329,7 @@ export default TokenAuthenticator.extend({
     @return {Integer} timestamp
   */
   getCurrentTime() {
-    return Math.floor((new Date()).getTime() / 1000);
+    return (new Date()).getTime();
   },
 
   /**
@@ -361,18 +353,18 @@ export default TokenAuthenticator.extend({
    */
   handleAuthResponse(response) {
     const token = Ember.get(response, this.tokenPropertyName);
+    const refreshToken = Ember.get(response, this.refreshTokenPropertyName);
 
     if (Ember.isEmpty(token)) {
       throw new Error('Token is empty. Please check your backend response.');
     }
-
     const tokenData = this.getTokenData(token);
     const expiresAt = Ember.get(tokenData, this.tokenExpireName);
     const tokenExpireData = {};
 
     tokenExpireData[this.tokenExpireName] = expiresAt;
 
-    this.scheduleAccessTokenRefresh(expiresAt, token);
+    this.scheduleAccessTokenRefresh(expiresAt, refreshToken);
 
     return assign(this.getResponseData(response), tokenExpireData);
   },
